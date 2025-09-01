@@ -17,8 +17,81 @@ Parameters:
     Default: buildspec.yml
 
 Resources:
+  PipelineArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  CloudFormationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CloudFormationPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:*'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${MicroserviceStackName}-*'
+                  - !Sub 'arn:aws:s3:::${MicroserviceStackName}-*/*'
+              - Effect: Allow
+                Action:
+                  - 'iam:PassRole'
+                Resource: '*'
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    DependsOn:
+      - PipelineArtifactBucket
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                # Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${CodeBuildProject}:*'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:GetBucketAcl
+                  - s3:PutBucketAcl
+                Resource:
+                  - !Sub 'arn:aws:s3:::${PipelineArtifactBucket}'
+                  - !Sub 'arn:aws:s3:::${PipelineArtifactBucket}/*'
+
   CodePipelineRole:
     Type: AWS::IAM::Role
+    DependsOn:
+      - PipelineArtifactBucket
+      - CloudFormationRole
+      - CodeBuildRole
     Properties:
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
@@ -49,6 +122,10 @@ Resources:
                 Resource: !GetAtt CodeBuildProject.Arn
               - Effect: Allow
                 Action:
+                  - codestar-connections:UseConnection
+                Resource: !ImportValue MyGitHubRepoConnectionArn
+              - Effect: Allow
+                Action:
                   - cloudformation:CreateChangeSet
                   - cloudformation:DescribeChangeSet
                   - cloudformation:ExecuteChangeSet
@@ -63,70 +140,8 @@ Resources:
                   - !GetAtt CodeBuildRole.Arn
                   - !GetAtt CloudFormationRole.Arn
 
-  CodeBuildRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: codebuild.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: CodeBuildPolicy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${CodeBuildProject}:*'
-              - Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:GetObjectVersion
-                  - s3:PutObject
-                  - s3:GetBucketAcl
-                  - s3:PutBucketAcl
-                Resource:
-                  - !Sub 'arn:aws:s3:::${PipelineArtifactBucket}'
-                  - !Sub 'arn:aws:s3:::${PipelineArtifactBucket}/*'
-
-  CloudFormationRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: cloudformation.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: CloudFormationPolicy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - 's3:*'
-                Resource:
-                  - !Sub 'arn:aws:s3:::${MicroserviceStackName}-*'
-                  - !Sub 'arn:aws:s3:::${MicroserviceStackName}-*/*'
-              - Effect: Allow
-                Action:
-                  - 'iam:PassRole'
-                Resource: '*'
-
   CodeBuildProject:
     Type: AWS::CodeBuild::Project
-    DependsOn:
-      - CodeBuildRole
-      - CodePipelineRole
-      - CloudFormationRole
     Properties:
       Name: !Sub '${MicroserviceStackName}-CodeBuild'
       ServiceRole: !GetAtt CodeBuildRole.Arn
@@ -157,17 +172,15 @@ Resources:
             - Name: Source
               ActionTypeId:
                 Category: Source
-                Owner: ThirdParty
-                Provider: GitHub
+                Owner: AWS
+                Provider: CodeStarSourceConnection
                 Version: '1'
               OutputArtifacts:
                 - Name: SourceArtifact
               Configuration:
-                Owner: !Ref GitHubOwner
-                Repo: !Ref MicroserviceRepoName
-                Branch: main
-                PollForSourceChanges: true
-                OAuthToken: !Ref GitHubToken
+                ConnectionArn: !ImportValue MyGitHubRepoConnectionArn
+                FullRepositoryId: !Sub '${GitHubOwner}/${MicroserviceRepoName}'
+                BranchName: main
         - Name: Build
           Actions:
             - Name: BuildArtifact
