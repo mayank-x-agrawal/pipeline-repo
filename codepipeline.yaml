@@ -2,21 +2,15 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: Generalized CodePipeline for a single microservice deployment.
 
 Parameters:
-  GitHubConnectionArn:
-    Type: String
-    Description: ARN of the GitHub connection resource.
-  MicroserviceRepoName:
-    Type: String
-    Description: Name of the microservice GitHub repository to deploy (e.g., helloworld1-repo).
   GitHubOwner:
     Type: String
     Description: GitHub repository owner.
+  MicroserviceRepoName:
+    Type: String
+    Description: Name of the microservice GitHub repository to deploy (e.g., helloworld1-repo).
   MicroserviceStackName:
     Type: String
     Description: CloudFormation stack name for the microservice.
-  LambdaExecutionRoleArn:
-    Type: String
-    Description: The ARN of the IAM role for the Lambda function.
 
 Resources:
   CodePipelineRole:
@@ -141,7 +135,7 @@ Resources:
               OutputArtifacts:
                 - Name: SourceArtifact
               Configuration:
-                ConnectionArn: !Ref GitHubConnectionArn
+                ConnectionArn: !ImportValue MyGitHubRepoConnectionArn
                 FullRepositoryId: !Sub '${GitHubOwner}/${MicroserviceRepoName}'
                 BranchName: main
         - Name: Build
