@@ -11,6 +11,10 @@ Parameters:
   MicroserviceStackName:
     Type: String
     Description: CloudFormation stack name for the microservice.
+  BuildSpecPath:
+    Type: String
+    Description: The path to the buildspec file.
+    Default: buildspec.yml
 
 Resources:
   CodePipelineRole:
@@ -42,13 +46,19 @@ Resources:
                   - codebuild:StartBuild
                   - codebuild:StopBuild
                   - codebuild:BatchGetBuilds
-                Resource: '*'
+                Resource: !GetAtt CodeBuildProject.Arn
               - Effect: Allow
                 Action:
-                  - cloudformation:*
-                Resource: '*'
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeStacks
+                  - cloudformation:GetTemplate
+                Resource: !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${MicroserviceStackName}/*'
               - Effect: Allow
-                Action: iam:PassRole
+                Action:
+                  - iam:PassRole
                 Resource:
                   - !GetAtt CodeBuildRole.Arn
                   - !GetAtt CloudFormationRole.Arn
@@ -70,15 +80,20 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - s3:GetObject
-                  - s3:PutObject
-                Resource: !Sub 'arn:aws:s3:::${PipelineArtifactBucket}/*'
-              - Effect: Allow
-                Action:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${CodeBuildProject}*'
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${CodeBuildProject}:*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:GetBucketAcl
+                  - s3:PutBucketAcl
+                Resource:
+                  - !Sub 'arn:aws:s3:::${PipelineArtifactBucket}'
+                  - !Sub 'arn:aws:s3:::${PipelineArtifactBucket}/*'
 
   CloudFormationRole:
     Type: AWS::IAM::Role
@@ -90,21 +105,30 @@ Resources:
             Principal:
               Service: cloudformation.amazonaws.com
             Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AdministratorAccess
-
-  PipelineArtifactBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
+      Policies:
+        - PolicyName: CloudFormationPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:*'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${MicroserviceStackName}-*'
+                  - !Sub 'arn:aws:s3:::${MicroserviceStackName}-*/*'
+              - Effect: Allow
+                Action:
+                  - 'iam:PassRole'
+                Resource: '*'
 
   CodeBuildProject:
     Type: AWS::CodeBuild::Project
+    DependsOn:
+      - CodeBuildRole
+      - CodePipelineRole
+      - CloudFormationRole
     Properties:
-      Name: !Sub 'CodeBuild-${MicroserviceRepoName}'
+      Name: !Sub '${MicroserviceStackName}-CodeBuild'
       ServiceRole: !GetAtt CodeBuildRole.Arn
       Artifacts:
         Type: CODEPIPELINE
@@ -114,11 +138,15 @@ Resources:
         Type: LINUX_CONTAINER
       Source:
         Type: CODEPIPELINE
-        BuildSpec: buildspec.yml
+        BuildSpec: !Ref BuildSpecPath
 
   CodePipeline:
     Type: AWS::CodePipeline::Pipeline
+    DependsOn:
+      - CodeBuildProject
+      - CodePipelineRole
     Properties:
+      Name: !Sub '${MicroserviceStackName}-Pipeline'
       RoleArn: !GetAtt CodePipelineRole.Arn
       ArtifactStore:
         Type: S3
@@ -126,21 +154,23 @@ Resources:
       Stages:
         - Name: Source
           Actions:
-            - Name: MicroserviceSource
+            - Name: Source
               ActionTypeId:
                 Category: Source
-                Owner: AWS
-                Provider: CodeStarSourceConnection
+                Owner: ThirdParty
+                Provider: GitHub
                 Version: '1'
               OutputArtifacts:
                 - Name: SourceArtifact
               Configuration:
-                ConnectionArn: !ImportValue MyGitHubRepoConnectionArn
-                FullRepositoryId: !Sub '${GitHubOwner}/${MicroserviceRepoName}'
-                BranchName: main
+                Owner: !Ref GitHubOwner
+                Repo: !Ref MicroserviceRepoName
+                Branch: main
+                PollForSourceChanges: true
+                OAuthToken: !Ref GitHubToken
         - Name: Build
           Actions:
-            - Name: BuildMicroservice
+            - Name: BuildArtifact
               ActionTypeId:
                 Category: Build
                 Owner: AWS
